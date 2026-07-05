@@ -32,6 +32,7 @@ test("setup reports ready when fake codex is installed and authenticated", () =>
   const binDir = makeTempDir();
   installFakeCodex(binDir);
 
+  //@@start setup-test-runs-in-real-repo-cwd
   const result = run("node", [SCRIPT, "setup", "--json"], {
     cwd: ROOT,
     env: buildEnv(binDir)
@@ -42,6 +43,7 @@ test("setup reports ready when fake codex is installed and authenticated", () =>
   assert.equal(payload.ready, true);
   assert.match(payload.codex.detail, /advanced runtime available/);
   assert.equal(payload.sessionRuntime.mode, "direct");
+  //@@end setup-test-runs-in-real-repo-cwd
 });
 
 test("setup is ready without npm when Codex is already installed and authenticated", () => {
@@ -901,6 +903,7 @@ test("task using the shared broker still completes when Codex spawns subagents",
   fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
 
   const env = buildEnv(binDir);
+  //@@start broker-spawned-never-reaped
   const review = run("node", [SCRIPT, "review"], {
     cwd: repo,
     env
@@ -910,6 +913,7 @@ test("task using the shared broker still completes when Codex spawns subagents",
   if (!loadBrokerSession(repo)) {
     return;
   }
+  //@@end broker-spawned-never-reaped
 
   const result = run("node", [SCRIPT, "task", "challenge the current design"], {
     cwd: repo,
@@ -1552,6 +1556,7 @@ test("cancel stops an active background job and marks it cancelled", async (t) =
   });
   sleeper.unref();
 
+  //@@start harness-knows-how-to-clean-up
   t.after(() => {
     try {
       process.kill(-sleeper.pid, "SIGTERM");
@@ -1563,6 +1568,7 @@ test("cancel stops an active background job and marks it cancelled", async (t) =
       }
     }
   });
+  //@@end harness-knows-how-to-clean-up
 
   const logFile = path.join(jobsDir, "task-live.log");
   const jobFile = path.join(jobsDir, "task-live.json");

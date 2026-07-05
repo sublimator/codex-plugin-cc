@@ -904,7 +904,9 @@ export function getCodexAvailability(cwd) {
 }
 
 export function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
+  //@@start endpoint-from-live-workspace-state
   const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
+  //@@end endpoint-from-live-workspace-state
   if (endpoint) {
     return {
       mode: "shared",

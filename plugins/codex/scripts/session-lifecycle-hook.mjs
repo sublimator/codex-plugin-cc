@@ -97,6 +97,7 @@ async function handleSessionEnd(input) {
   const sessionDir = brokerSession?.sessionDir ?? null;
   const pid = brokerSession?.pid ?? null;
 
+  //@@start unconditional-broker-teardown
   if (brokerEndpoint) {
     await sendBrokerShutdown(brokerEndpoint);
   }
@@ -111,6 +112,7 @@ async function handleSessionEnd(input) {
     killProcess: terminateProcessTree
   });
   clearBrokerSession(cwd);
+  //@@end unconditional-broker-teardown
 }
 
 async function main() {
