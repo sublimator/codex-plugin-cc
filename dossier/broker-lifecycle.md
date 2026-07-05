@@ -1,14 +1,14 @@
 <!--
 rendered_from: broker-lifecycle.md.j2
-rendered_at: 2026-07-05T10:10:40Z
+rendered_at: 2026-07-05T10:15:02Z
 branch: fix/shared-broker-upstream
-commit: 67d5a6b
-commit_message: docs: marker at setup-auth reuseExistingBroker (dossier bug 3 citation)
+commit: 48658b0
+commit_message: docs: dossier precision fixes from codex review
 -->
 
 ---
 
-<sub>Last updated: 2026-07-05 | branch: fix/shared-broker-upstream | commit: 67d5a6b (docs: marker at setup-auth reuseExistingBroker (dossier bug 3 citation))</sub>
+<sub>Last updated: 2026-07-05 | branch: fix/shared-broker-upstream | commit: 48658b0 (docs: dossier precision fixes from codex review)</sub>
 
 ---
 
@@ -39,7 +39,7 @@ Every Claude Code session in the same project directory shares one Codex broker
 SessionEnd hook resolves the broker by cwd and unconditionally shuts it down,
 kills its process tree, and deletes the session record:
 
-📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:101-114`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/plugins/codex/scripts/session-lifecycle-hook.mjs#L101-L114)
+📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:101-114`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/plugins/codex/scripts/session-lifecycle-hook.mjs#L101-L114)
 ```javascript
  101   if (brokerEndpoint) {
  102     await sendBrokerShutdown(brokerEndpoint);
@@ -92,7 +92,7 @@ manually.
 <details>
 <summary><b>Why the zombie: cleanupSessionJobs only reaps the ending session</b></summary>
 
-📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:42-75`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/plugins/codex/scripts/session-lifecycle-hook.mjs#L42-L75)
+📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:42-75`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/plugins/codex/scripts/session-lifecycle-hook.mjs#L42-L75)
 ```javascript
   42 function cleanupSessionJobs(cwd, sessionId) {
   43   if (!cwd || !sessionId) {
@@ -149,7 +149,7 @@ idle orphan broker", which the next session reuses or restarts harmlessly.
 
 The test harness creates workspaces with a recognizable prefix:
 
-📍 [`tests/helpers.mjs:7-9`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/tests/helpers.mjs#L7-L9)
+📍 [`tests/helpers.mjs:7-9`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/tests/helpers.mjs#L7-L9)
 ```javascript
    7 export function makeTempDir(prefix = "codex-plugin-test-") {
    8   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -160,7 +160,7 @@ Tests then drive the real companion, which — by design — auto-starts a broke
 for the workspace. This test *proves* a broker was started (it checks
 `loadBrokerSession(repo)`), runs one more `task` command against it, and ends:
 
-📍 [`tests/runtime.test.mjs:907-915`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/tests/runtime.test.mjs#L907-L915)
+📍 [`tests/runtime.test.mjs:907-915`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/tests/runtime.test.mjs#L907-L915)
 ```javascript
  907   const review = run("node", [SCRIPT, "review"], {
  908     cwd: repo,
@@ -177,7 +177,7 @@ Nothing stops that broker. Ever. The harness demonstrably knows how to clean up
 after itself — here it is conscientiously reaping a throwaway `sleep` process —
 it just never extends the courtesy to brokers:
 
-📍 [`tests/runtime.test.mjs:1560-1570`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/tests/runtime.test.mjs#L1560-L1570)
+📍 [`tests/runtime.test.mjs:1560-1570`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/tests/runtime.test.mjs#L1560-L1570)
 ```javascript
 1560   t.after(() => {
 1561     try {
@@ -232,10 +232,10 @@ that involve a real second session.
 
 ## Bug 3 — tests read live workspace state, so real brokers fail fake tests
 
-The setup tests run the companion **in the actual repo root**, with only PATH
-and HOME-ish variables faked:
+The setup tests run the companion **in the actual repo root**, with only
+PATH faked:
 
-📍 [`tests/runtime.test.mjs:36-45`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/tests/runtime.test.mjs#L36-L45)
+📍 [`tests/runtime.test.mjs:36-45`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/tests/runtime.test.mjs#L36-L45)
 ```javascript
   36   const result = run("node", [SCRIPT, "setup", "--json"], {
   37     cwd: ROOT,
@@ -252,7 +252,7 @@ and HOME-ish variables faked:
 That final assertion — `sessionRuntime.mode === "direct"` — reaches this code,
 whose fallback consults the **real** `broker.json` for the cwd it was handed:
 
-📍 [`plugins/codex/scripts/lib/codex.mjs:908`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/plugins/codex/scripts/lib/codex.mjs#L908)
+📍 [`plugins/codex/scripts/lib/codex.mjs:908`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/plugins/codex/scripts/lib/codex.mjs#L908)
 ```javascript
  908   const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
 ```
@@ -262,7 +262,7 @@ through a second door: setup's auth check *connects to the live broker* rather
 than the faked `codex` on PATH, so their auth/ready assertions are judged
 against the real runtime's state instead of the fixture's:
 
-📍 [`plugins/codex/scripts/lib/codex.mjs:945-948`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/plugins/codex/scripts/lib/codex.mjs#L945-L948)
+📍 [`plugins/codex/scripts/lib/codex.mjs:945-948`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/plugins/codex/scripts/lib/codex.mjs#L945-L948)
 ```javascript
  945     client = await CodexAppServerClient.connect(cwd, {
  946       env: options.env,

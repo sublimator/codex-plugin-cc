@@ -137,8 +137,8 @@ that involve a real second session.
 
 ## Bug 3 — tests read live workspace state, so real brokers fail fake tests
 
-The setup tests run the companion **in the actual repo root**, with only PATH
-and HOME-ish variables faked:
+The setup tests run the companion **in the actual repo root**, with only
+PATH faked:
 
 {{ code('tests/runtime.test.mjs', marker='setup-test-runs-in-real-repo-cwd') }}
 
