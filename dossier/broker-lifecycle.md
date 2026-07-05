@@ -1,45 +1,79 @@
 <!--
 rendered_from: broker-lifecycle.md.j2
-rendered_at: 2026-07-05T10:15:02Z
+rendered_at: 2026-07-05T12:35:17Z
 branch: fix/shared-broker-upstream
-commit: 48658b0
-commit_message: docs: dossier precision fixes from codex review
+commit: 86ea7dd
+commit_message: docs: dossier wording — setup tests fake only PATH (codex re-review)
 -->
 
 ---
 
-<sub>Last updated: 2026-07-05 | branch: fix/shared-broker-upstream | commit: 48658b0 (docs: dossier precision fixes from codex review)</sub>
+<sub>Last updated: 2026-07-05 | branch: fix/shared-broker-upstream | commit: 86ea7dd (docs: dossier wording — setup tests fake only PATH (codex re-review))</sub>
 
 ---
 
 # The Broker Lifecycle Dossier
 
-**Three interlocking bugs in `codex-plugin-cc`'s shared-runtime management** — observed,
-reproduced, and forensically documented on 2026-07-05 against plugin v1.0.5
-(upstream `80c31f9`), macOS (Darwin 25.5.0), multiple concurrent Claude Code sessions.
+`codex-plugin-cc` coordinates several independent OS processes — interactive
+sessions, detached background workers, and lifecycle hooks — through shared JSON
+files (`state.json`, `broker.json`) and one broker process, all keyed by the
+working directory. Nothing serialises them: there is no cross-process lock,
+compare-and-swap, or liveness check anywhere in the tree, so every mutation is
+an unguarded read-modify-write or check-then-act done as if a single owner held
+the files. The `tmp+rename` writes keep individual writes from tearing but never
+make the compound operations atomic — which is why the same defect surfaces
+repeatedly: concurrent processes clobber each other's records, spawn duplicate
+brokers, and delete files or kill pids out from under a peer still using them.
+
+*(That paragraph is the shared conclusion of three independent reviewers given
+only the raw findings and the source, asked to state the core problem cold.)*
+
+Documented 2026-07-05 against plugin v1.0.5 (upstream `80c31f9`) on macOS, with
+multiple concurrent Claude Code sessions. Below: four bugs worked through in
+detail (Part I), then an audit of the shared-state surfaces that found 19
+confirmed races sharing this cause (Part II).
 
 ## TL;DR
 
 | # | Bug | Severity | One line |
 |---|-----|----------|----------|
-| 1 | **SessionEnd murders the shared broker** | High | Any Claude session ending tears down the cwd-shared broker with no ownership check — killing other sessions' running Codex jobs mid-turn and leaving their job records zombied at `"running"` forever. |
+| 1 | **SessionEnd tears down a broker in use** | High | Any session ending shuts down the cwd-shared broker with no ownership check — killing other sessions' running jobs mid-turn and leaving their records stuck at `"running"`. |
 | 2 | **The test suite leaks a process pair per broker** | Medium | Every `npm test` run leaves ~25–30 orphaned `app-server-broker` + `codex app-server` processes. We found **184** accumulated, the oldest 30+ hours old. |
-| 3 | **Tests read live workspace state** | Medium | The setup tests run in the real repo cwd and talk to the real `broker.json` — one live broker for the repo made five setup tests fail (one on `'shared' !== 'direct'`, four on auth assertions contaminated via `reuseExistingBroker`). |
+| 3 | **Tests read live workspace state** | Medium | The setup tests run in the real repo cwd and talk to the real `broker.json` — one live broker made five setup tests fail (one on `'shared' !== 'direct'`, four on auth assertions contaminated via `reuseExistingBroker`). |
+| 4 | **Broker keeps answering after its child dies** | Medium | The broker's child app-server exits, but the broker keeps passing health probes locally, so the next turn fails with `connection closed` — the pass/fail/pass/fail of #402. |
 
-Every code reference below is a permalink into this fork at a commit where the
-relevant lines are fenced with `//@@` extraction markers — click through and read
-the real source. Related upstream issues: #380, #402, #286, #416.
+This began as three bugs found by hand. A fourth turned up while fixing them
+(the zombie broker, upstream #402). All four only bite when more than one
+session shares a directory, so we then checked the shared-state surfaces
+directly: eight read-only passes, each finding re-checked by a separate
+verifier. That found 19 more concurrency races. Most share a couple of root
+causes.
+
+Two parts:
+
+- **Part I** — the four bugs, each worked through with permalinks to the source.
+- **Part II** — the audit, and what the 19 findings have in common.
+
+Code references in Part I link to the marked source in this fork (the
+`//@@` markers are the anchors). Related issues: #380, #402, #286, #416.
+
+
+# Part I — the four bugs
+
+*All four bugs are fixed in this branch. Each section describes the bug as it
+was and the fix that landed; the snippets below are the pre-fix code (pinned to
+commit `86ea7dd`) with the `//@@` markers around the relevant lines.*
 
 ---
 
-## Bug 1 — SessionEnd murders the shared broker
+## Bug 1 — SessionEnd tears down a broker other sessions are using
 
-Every Claude Code session in the same project directory shares one Codex broker
-(`broker.json` is keyed by cwd). When **any** of those sessions ends, the
-SessionEnd hook resolves the broker by cwd and unconditionally shuts it down,
-kills its process tree, and deletes the session record:
+Every Claude Code session in the same directory shares one Codex broker
+(`broker.json` is keyed by cwd). When a session ended, the SessionEnd hook
+found the broker by cwd and shut it down unconditionally — killed its process
+tree and deleted the record:
 
-📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:101-114`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/plugins/codex/scripts/session-lifecycle-hook.mjs#L101-L114)
+📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:101-114 @ 86ea7dd`](https://github.com/sublimator/codex-plugin-cc/blob/86ea7dd6cd57b847b55cda2efcecb0e23fcd31ca/plugins/codex/scripts/session-lifecycle-hook.mjs#L101-L114)
 ```javascript
  101   if (brokerEndpoint) {
  102     await sendBrokerShutdown(brokerEndpoint);
@@ -57,7 +91,7 @@ kills its process tree, and deletes the session record:
  114   clearBrokerSession(cwd);
 ```
 
-There is no check for other live sessions or their in-flight jobs. The
+There was no check for other live sessions or their in-flight jobs. The
 consequences split by victim:
 
 - **The broker and its `codex app-server`** die immediately (`terminateProcessTree`).
@@ -92,7 +126,7 @@ manually.
 <details>
 <summary><b>Why the zombie: cleanupSessionJobs only reaps the ending session</b></summary>
 
-📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:42-75`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/plugins/codex/scripts/session-lifecycle-hook.mjs#L42-L75)
+📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:42-75 @ 86ea7dd`](https://github.com/sublimator/codex-plugin-cc/blob/86ea7dd6cd57b847b55cda2efcecb0e23fcd31ca/plugins/codex/scripts/session-lifecycle-hook.mjs#L42-L75)
 ```javascript
   42 function cleanupSessionJobs(cwd, sessionId) {
   43   if (!cwd || !sessionId) {
@@ -149,18 +183,18 @@ idle orphan broker", which the next session reuses or restarts harmlessly.
 
 The test harness creates workspaces with a recognizable prefix:
 
-📍 [`tests/helpers.mjs:7-9`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/tests/helpers.mjs#L7-L9)
+📍 [`tests/helpers.mjs:7-9 @ 86ea7dd`](https://github.com/sublimator/codex-plugin-cc/blob/86ea7dd6cd57b847b55cda2efcecb0e23fcd31ca/tests/helpers.mjs#L7-L9)
 ```javascript
    7 export function makeTempDir(prefix = "codex-plugin-test-") {
    8   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
    9 }
 ```
 
-Tests then drive the real companion, which — by design — auto-starts a broker
-for the workspace. This test *proves* a broker was started (it checks
-`loadBrokerSession(repo)`), runs one more `task` command against it, and ends:
+Tests then drive the real companion, which auto-starts a broker for the
+workspace. This test checked that a broker was started (`loadBrokerSession(repo)`),
+ran one more `task` command against it, and ended:
 
-📍 [`tests/runtime.test.mjs:907-915`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/tests/runtime.test.mjs#L907-L915)
+📍 [`tests/runtime.test.mjs:907-915 @ 86ea7dd`](https://github.com/sublimator/codex-plugin-cc/blob/86ea7dd6cd57b847b55cda2efcecb0e23fcd31ca/tests/runtime.test.mjs#L907-L915)
 ```javascript
  907   const review = run("node", [SCRIPT, "review"], {
  908     cwd: repo,
@@ -173,11 +207,11 @@ for the workspace. This test *proves* a broker was started (it checks
  915   }
 ```
 
-Nothing stops that broker. Ever. The harness demonstrably knows how to clean up
-after itself — here it is conscientiously reaping a throwaway `sleep` process —
-it just never extends the courtesy to brokers:
+Nothing stopped that broker afterwards. The harness cleaned up other
+resources — here it reaps a throwaway `sleep` process — but never did the same
+for brokers:
 
-📍 [`tests/runtime.test.mjs:1560-1570`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/tests/runtime.test.mjs#L1560-L1570)
+📍 [`tests/runtime.test.mjs:1560-1570 @ 86ea7dd`](https://github.com/sublimator/codex-plugin-cc/blob/86ea7dd6cd57b847b55cda2efcecb0e23fcd31ca/tests/runtime.test.mjs#L1560-L1570)
 ```javascript
 1560   t.after(() => {
 1561     try {
@@ -232,10 +266,10 @@ that involve a real second session.
 
 ## Bug 3 — tests read live workspace state, so real brokers fail fake tests
 
-The setup tests run the companion **in the actual repo root**, with only
-PATH faked:
+The setup tests ran the companion **in the actual repo root**, with only PATH
+faked:
 
-📍 [`tests/runtime.test.mjs:36-45`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/tests/runtime.test.mjs#L36-L45)
+📍 [`tests/runtime.test.mjs:36-45 @ 86ea7dd`](https://github.com/sublimator/codex-plugin-cc/blob/86ea7dd6cd57b847b55cda2efcecb0e23fcd31ca/tests/runtime.test.mjs#L36-L45)
 ```javascript
   36   const result = run("node", [SCRIPT, "setup", "--json"], {
   37     cwd: ROOT,
@@ -252,7 +286,7 @@ PATH faked:
 That final assertion — `sessionRuntime.mode === "direct"` — reaches this code,
 whose fallback consults the **real** `broker.json` for the cwd it was handed:
 
-📍 [`plugins/codex/scripts/lib/codex.mjs:908`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/plugins/codex/scripts/lib/codex.mjs#L908)
+📍 [`plugins/codex/scripts/lib/codex.mjs:908 @ 86ea7dd`](https://github.com/sublimator/codex-plugin-cc/blob/86ea7dd6cd57b847b55cda2efcecb0e23fcd31ca/plugins/codex/scripts/lib/codex.mjs#L908)
 ```javascript
  908   const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
 ```
@@ -262,7 +296,7 @@ through a second door: setup's auth check *connects to the live broker* rather
 than the faked `codex` on PATH, so their auth/ready assertions are judged
 against the real runtime's state instead of the fixture's:
 
-📍 [`plugins/codex/scripts/lib/codex.mjs:945-948`](https://github.com/sublimator/codex-plugin-cc/blob/48658b0a2e5e0a91409fc2a400b16c79a7996d87/plugins/codex/scripts/lib/codex.mjs#L945-L948)
+📍 [`plugins/codex/scripts/lib/codex.mjs:945-948 @ 86ea7dd`](https://github.com/sublimator/codex-plugin-cc/blob/86ea7dd6cd57b847b55cda2efcecb0e23fcd31ca/plugins/codex/scripts/lib/codex.mjs#L945-L948)
 ```javascript
  945     client = await CodexAppServerClient.connect(cwd, {
  946       env: options.env,
@@ -305,18 +339,140 @@ isolated state/broker directory the way they already inject PATH.
 
 ---
 
-## How the three compound
+## Bug 4 — the broker keeps answering after its child dies (#402)
 
-Bug 2 breeds orphan brokers on every developer machine that runs the tests —
-in temp workspaces, so they don't trip Bug 3 directly, but they bury the *one*
-broker that matters in a haystack of dozens and make any process-level
-diagnosis miserable. Bug 3 turns any legitimate repo-root broker — the natural
-consequence of a developer using the companion in their own checkout — into
-five phantom test failures. And while you're debugging *that*, Bug 1 is
-killing your long-running Codex jobs whenever an unrelated Claude session
-exits, leaving zombie job records that report `"running"` from beyond the
-grave. Each bug manufactures evidence that misdirects the investigation of
-the others — which is how all three survived to v1.0.5.
+The broker multiplexes one child `codex app-server` to every session in the
+cwd. That child exits after a turn, but the broker process stays up and its
+socket keeps answering the `initialize` health-probe locally, without checking
+the dead child. So the next session's reuse check passes, it sends a real turn,
+and the turn fails with `codex app-server connection closed.` — no `rpcCode`,
+no errno, which the client's retry classifier didn't recognise. That produces
+the pass/fail/pass/fail alternation described in #402.
+
+Shipped fix, two parts: the broker now watches its child's exit and shuts
+itself down, so probes fail with `ECONNREFUSED` (which the retry path already
+handles); and the classifier now treats the bare "connection closed" as a
+broker failure worth a direct retry. Covered by a new regression test.
+
+## How the four relate
+
+The test-suite bugs (2, 3) mostly get in the way of diagnosis: leaked brokers
+bury the one that matters, and a live repo-root broker fails unrelated tests.
+The runtime bugs (1, 4) are the ones that hurt users: an unrelated session's
+exit kills your long-running job, and surviving brokers die intermittently on
+reuse. They share a cause — no coordination over a shared, cwd-keyed broker —
+which Part II makes explicit.
+
+---
+
+# Part II — the pattern
+
+All four Part I bugs are lifecycle bugs that only appear under concurrent
+sessions. So rather than keep finding them one at a time, we audited the
+shared-state surfaces directly: eight read-only passes — `state.json`
+read-modify-write, `broker.json` lifecycle, the broker's serving model, client
+reuse/retry, the env-file and cwd-hash keying, background workers, the review
+gate, and process/PID handling. Each finding was then given to a separate
+verifier told to refute it — to reject anything actually serialised by process
+boundaries or the blocking `spawnSync`, and to default to "not real" when it
+couldn't reconstruct the interleaving.
+
+19 findings survived. The full list, with locations and the verifiers'
+reasoning, is in
+[`multisession-findings-raw.md`](multisession-findings-raw.md). The useful
+number, though, isn't 19 — it's how few root causes they share.
+
+## 19 findings, 6 clusters
+
+| Cluster | Root cause | Findings | Simple fix reaches? |
+|--------|-----------|:--------:|--------------------|
+| **A. Unlocked `state.json`** | `load → mutate → save` is not atomic across processes, and `saveState` then *deletes* job files absent from a possibly-stale snapshot | **8** | Partly — see scorecard |
+| **B. No broker ownership** | cold-start spawn is check-then-act with no lock; `broker.json` written non-atomically | **4** | Partly |
+| **C. `BROKER_BUSY` handling** | for write tasks the client retries *direct*, running two agents on one tree (finding 5); for setup/auth, a busy broker is reported as the user being busy / logged-out (findings 16, 17) | **3** | Mixed |
+| **D. PID trusted without identity** | stored pids are group-killed with no liveness/identity check (PID reuse) | **2** | Partly |
+| **E. Cancel clobber** | cancel overwrites a job that finished mid-cancel | **1** | Needs CAS |
+| **F. Jobless-broker ownership** | the teardown gate counts only *tracked jobs*, missing jobless broker clients | **1** | Design choice |
+
+Clusters A and B are twelve of the nineteen, and most of them come down to
+unsynchronized access to a shared file. Not all: two are torn `broker.json`
+writes, already fixed here by an atomic rename, and one (finding 14) is a prune
+policy that drops active jobs rather than a race. But the bulk is the lock.
+Two separate reviews of the findings (one given no priming) agreed on this and
+on the design conclusion: the one-broker-per-cwd model is the right shape — it
+serialises app-server turns over a shared working tree — but sharing JSON files
+that every process mutates without coordination is not. The fix is a lock
+discipline (or SQLite if it grows), not per-session brokers.
+
+## What the simple fixes reach
+
+The race and the damage are separable, and the damage is the simpler thing to
+fix. A briefly-stale status field is self-healing; a live worker's files
+deleted off disk are not. So the safe subset shipped here targets the
+destruction rather than the race:
+
+- **`broker.json` atomic write** (Cluster B) — the `tmp+rename` its sibling
+  `state.json` already had. A torn read can no longer be misread as "no broker"
+  and spawn a duplicate.
+- **The GC guard** (Cluster A) — `pruneJobs`/`saveState` no longer delete a
+  *queued or running* job's files, so a concurrent worker's output survives a
+  stale-snapshot write while it runs. (Two narrow gaps remain: a worker's
+  output can still be deleted in the short window after it goes terminal but
+  before the stale write lands, and SessionEnd now deletes its own jobs' files
+  itself since the guard stops `saveState` from doing it. Neither is the
+  durable fix.)
+- The Part I fixes: the SessionEnd ownership gate, the #402 self-teardown and
+  retry classifier, and the `pid > 1` group-kill guard (Cluster D, partial).
+
+Where the simple fix stops: the guard saves the job's *files*, but the *record*
+can still drop from `state.json`, because `saveState` writes the caller's whole
+array and a stale caller never held the other session's job. If the record is
+gone, the ownership gate can't see the job and the broker can be torn down
+under it. A stale write can also go the other way — resurrecting a
+just-completed job as `running` with a dead pid (finding 11), which the status
+and cancel paths then trust. Closing these needs the lock (so cleanup reads
+fresh state) or a merge that knows the caller's intent — you have to tell
+"another writer added this" apart from "I'm removing my own." That's the part
+the simple fix can't reach.
+
+## What this PR does, and what it leaves
+
+This PR fixes some of the issues, not all of them. It ships the changes that
+are correct, self-contained, and low-risk: the four Part I bugs, plus the safe
+subset of Clusters A/B/D — `broker.json` made atomic, the GC guard, and the
+`pid > 1` group-kill guard. These remove the most destructive edges.
+
+It does not attempt the underlying refactor. The durable fix is a design
+change — a state-transaction lock and a broker-acquisition lease — which is
+larger than a bug-fix PR should carry and is better done as its own reviewed
+change. The scorecard above leaves the seam visible so this boundary is clear:
+what's left below is mostly one design change plus a few smaller fixes, not a
+long list of unrelated tickets.
+
+## The refactor this needs (not in this PR)
+
+1. **A single locked state transaction.** Wrap `load → mutate → save` in a
+   cross-process lock (lock-dir or `open(…, "wx")` with stale-lock recovery),
+   expose it as one `updateStateLocked(cwd, mutator)`, and route every writer
+   through it. Rewrite `cleanupSessionJobs` to remove *this session's* jobs
+   from the freshly-locked state, never to write back a stale survivor array.
+   Closes Cluster A (8) and the seam above.
+2. **The same lock around broker acquisition** — `load/probe/spawn/publish`
+   under one lease so two sessions can't both cold-start a broker. Closes the
+   rest of Cluster B (4).
+3. **Treat `BROKER_BUSY` as serialisation, not transport failure** — for
+   write tasks, wait/queue/fail loudly rather than direct-retry into a second
+   writer on the same tree (finding 5). This is a protocol decision, not a
+   lock. The related setup/auth false-negatives (16, 17) are a separate,
+   smaller diagnostic fix.
+4. Targeted hardening for the tail: PID identity before group-kill (D),
+   compare-and-set on cancel (E), broker-side shutdown awareness (F) — each a
+   different mechanism.
+
+Items 1 and 2 are the same primitive (a lock) and cover about half the
+findings. Items 3 and 4 are separate mechanisms — a protocol decision and some
+targeted hardening. So the remaining work is one design change plus a few
+independent fixes: fewer moving parts than nineteen tickets suggest, but more
+than a single lever.
 
 ---
 
