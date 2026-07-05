@@ -941,10 +941,12 @@ export async function getCodexAuthStatus(cwd, options = {}) {
 
   let client = null;
   try {
+    //@@start setup-auth-reuses-live-broker
     client = await CodexAppServerClient.connect(cwd, {
       env: options.env,
       reuseExistingBroker: true
     });
+    //@@end setup-auth-reuses-live-broker
     return await getCodexAuthStatusFromClient(client, cwd);
   } catch (error) {
     return buildAuthStatus({
