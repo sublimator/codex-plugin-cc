@@ -10,7 +10,7 @@ reproduced, and forensically documented on 2026-07-05 against plugin v1.0.5
 |---|-----|----------|----------|
 | 1 | **SessionEnd murders the shared broker** | High | Any Claude session ending tears down the cwd-shared broker with no ownership check — killing other sessions' running Codex jobs mid-turn and leaving their job records zombied at `"running"` forever. |
 | 2 | **The test suite leaks a process pair per broker** | Medium | Every `npm test` run leaves ~25–30 orphaned `app-server-broker` + `codex app-server` processes. We found **184** accumulated, the oldest 30+ hours old. |
-| 3 | **Tests read live workspace state** | Medium | The setup tests run in the real repo cwd and consult the real `broker.json` — one live broker for the repo makes five unrelated tests fail with `'shared' !== 'direct'`. |
+| 3 | **Tests read live workspace state** | Medium | The setup tests run in the real repo cwd and talk to the real `broker.json` — one live broker for the repo made five setup tests fail (one on `'shared' !== 'direct'`, four on auth assertions contaminated via `reuseExistingBroker`). |
 
 Every code reference below is a permalink into this fork at a commit where the
 relevant lines are fenced with `//@@` extraction markers — click through and read
@@ -87,7 +87,7 @@ The test harness creates workspaces with a recognizable prefix:
 
 Tests then drive the real companion, which — by design — auto-starts a broker
 for the workspace. This test *proves* a broker was started (it checks
-`loadBrokerSession(repo)`), and then simply ends:
+`loadBrokerSession(repo)`), runs one more `task` command against it, and ends:
 
 {{ code('tests/runtime.test.mjs', marker='broker-spawned-never-reaped') }}
 
@@ -147,10 +147,17 @@ whose fallback consults the **real** `broker.json` for the cwd it was handed:
 
 {{ code('plugins/codex/scripts/lib/codex.mjs', function='getSessionRuntimeStatus', marker='endpoint-from-live-workspace-state') }}
 
-If any real broker exists for the repo directory — say, because a developer ran
-`codex-companion task` from the repo root an hour ago, or because Bug 2 left one
-behind — five setup tests fail with `'shared' !== 'direct'`, and nothing in the
-failure output hints that the cause is a background process from last Tuesday.
+That explains one failing test. The other four setup tests are contaminated
+through a second door: setup's auth check *connects to the live broker* rather
+than the faked `codex` on PATH, so their auth/ready assertions are judged
+against the real runtime's state instead of the fixture's:
+
+{{ code('plugins/codex/scripts/lib/codex.mjs', marker='setup-auth-reuses-live-broker') }}
+
+So if any real broker exists for the repo directory — say, because a developer
+ran `codex-companion task` from the repo root an hour ago — five setup tests
+fail, and nothing in the failure output hints that the cause is a background
+process from earlier in the day.
 
 <details>
 <summary><b>Controlled repro — 90/90 → 85/5 → 90/90 without touching a line of code</b></summary>
@@ -161,10 +168,12 @@ failure output hints that the cause is a background process from last Tuesday.
    (auto-starts a broker; broker.json now exists for the repo cwd)
 3. same suite:          node --test tests/*.test.mjs   → # pass 85, # fail 5
 
-   all five failures identical:
+   the five failures are all setup tests; the mode assertion reads:
      AssertionError: 'shared' !== 'direct'
        expected: 'direct'   actual: 'shared'
-       at tests/runtime.test.mjs (setup tests)
+       at tests/runtime.test.mjs (setup test, sessionRuntime.mode)
+   the remaining four fail their auth/ready assertions — setup's auth
+   check reached the live broker instead of the faked codex binary.
 
 4. SessionEnd teardown of that broker (the plugin's own hook)
 5. same suite:          setup tests → 8/8; full suite → 90/90
@@ -182,17 +191,22 @@ isolated state/broker directory the way they already inject PATH.
 
 ## How the three compound
 
-Bug 2 breeds orphan brokers on every developer machine that runs the tests.
-Bug 3 turns any of those orphans (or any legitimate broker) into five phantom
-test failures. And while you're debugging *that*, Bug 1 is killing your
-long-running Codex jobs whenever an unrelated Claude session exits, leaving
-zombie job records that report `"running"` from beyond the grave. Each bug
-manufactures evidence that misdirects the investigation of the others — which
-is exactly how they survived to v1.0.5.
+Bug 2 breeds orphan brokers on every developer machine that runs the tests —
+in temp workspaces, so they don't trip Bug 3 directly, but they bury the *one*
+broker that matters in a haystack of dozens and make any process-level
+diagnosis miserable. Bug 3 turns any legitimate repo-root broker — the natural
+consequence of a developer using the companion in their own checkout — into
+five phantom test failures. And while you're debugging *that*, Bug 1 is
+killing your long-running Codex jobs whenever an unrelated Claude session
+exits, leaving zombie job records that report `"running"` from beyond the
+grave. Each bug manufactures evidence that misdirects the investigation of
+the others — which is how all three survived to v1.0.5.
 
 ---
 
 *Generated with [projected-source](https://github.com/sublimator/projected-source):
 every snippet above is extracted from the marked source in this fork at render
 time, with GitHub permalinks — the `//@@start`/`//@@end` markers in the source
-are the anchors. Rendered from `dossier/broker-lifecycle.md.j2`.*
+are the anchors. Permalinks deliberately pin the markers commit (the dossier
+commit lands after it, so the two shas differ by design). Rendered from
+`dossier/broker-lifecycle.md.j2`.*

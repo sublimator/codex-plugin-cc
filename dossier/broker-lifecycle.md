@@ -1,14 +1,14 @@
 <!--
 rendered_from: broker-lifecycle.md.j2
-rendered_at: 2026-07-05T10:02:43Z
+rendered_at: 2026-07-05T10:10:40Z
 branch: fix/shared-broker-upstream
-commit: 35011c5
-commit_message: docs: add projected-source extraction markers at broker-lifecycle bug sites
+commit: 67d5a6b
+commit_message: docs: marker at setup-auth reuseExistingBroker (dossier bug 3 citation)
 -->
 
 ---
 
-<sub>Last updated: 2026-07-05 | branch: fix/shared-broker-upstream | commit: 35011c5 (docs: add projected-source extraction markers at broker-lifecycle bug sites)</sub>
+<sub>Last updated: 2026-07-05 | branch: fix/shared-broker-upstream | commit: 67d5a6b (docs: marker at setup-auth reuseExistingBroker (dossier bug 3 citation))</sub>
 
 ---
 
@@ -24,7 +24,7 @@ reproduced, and forensically documented on 2026-07-05 against plugin v1.0.5
 |---|-----|----------|----------|
 | 1 | **SessionEnd murders the shared broker** | High | Any Claude session ending tears down the cwd-shared broker with no ownership check — killing other sessions' running Codex jobs mid-turn and leaving their job records zombied at `"running"` forever. |
 | 2 | **The test suite leaks a process pair per broker** | Medium | Every `npm test` run leaves ~25–30 orphaned `app-server-broker` + `codex app-server` processes. We found **184** accumulated, the oldest 30+ hours old. |
-| 3 | **Tests read live workspace state** | Medium | The setup tests run in the real repo cwd and consult the real `broker.json` — one live broker for the repo makes five unrelated tests fail with `'shared' !== 'direct'`. |
+| 3 | **Tests read live workspace state** | Medium | The setup tests run in the real repo cwd and talk to the real `broker.json` — one live broker for the repo made five setup tests fail (one on `'shared' !== 'direct'`, four on auth assertions contaminated via `reuseExistingBroker`). |
 
 Every code reference below is a permalink into this fork at a commit where the
 relevant lines are fenced with `//@@` extraction markers — click through and read
@@ -39,7 +39,7 @@ Every Claude Code session in the same project directory shares one Codex broker
 SessionEnd hook resolves the broker by cwd and unconditionally shuts it down,
 kills its process tree, and deletes the session record:
 
-📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:101-114`](https://github.com/sublimator/codex-plugin-cc/blob/35011c5e524cbdaaf1c9a5bd0a796c57ca14fba4/plugins/codex/scripts/session-lifecycle-hook.mjs#L101-L114)
+📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:101-114`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/plugins/codex/scripts/session-lifecycle-hook.mjs#L101-L114)
 ```javascript
  101   if (brokerEndpoint) {
  102     await sendBrokerShutdown(brokerEndpoint);
@@ -92,7 +92,7 @@ manually.
 <details>
 <summary><b>Why the zombie: cleanupSessionJobs only reaps the ending session</b></summary>
 
-📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:42-75`](https://github.com/sublimator/codex-plugin-cc/blob/35011c5e524cbdaaf1c9a5bd0a796c57ca14fba4/plugins/codex/scripts/session-lifecycle-hook.mjs#L42-L75)
+📍 [`plugins/codex/scripts/session-lifecycle-hook.mjs:42-75`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/plugins/codex/scripts/session-lifecycle-hook.mjs#L42-L75)
 ```javascript
   42 function cleanupSessionJobs(cwd, sessionId) {
   43   if (!cwd || !sessionId) {
@@ -149,7 +149,7 @@ idle orphan broker", which the next session reuses or restarts harmlessly.
 
 The test harness creates workspaces with a recognizable prefix:
 
-📍 [`tests/helpers.mjs:7-9`](https://github.com/sublimator/codex-plugin-cc/blob/35011c5e524cbdaaf1c9a5bd0a796c57ca14fba4/tests/helpers.mjs#L7-L9)
+📍 [`tests/helpers.mjs:7-9`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/tests/helpers.mjs#L7-L9)
 ```javascript
    7 export function makeTempDir(prefix = "codex-plugin-test-") {
    8   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -158,9 +158,9 @@ The test harness creates workspaces with a recognizable prefix:
 
 Tests then drive the real companion, which — by design — auto-starts a broker
 for the workspace. This test *proves* a broker was started (it checks
-`loadBrokerSession(repo)`), and then simply ends:
+`loadBrokerSession(repo)`), runs one more `task` command against it, and ends:
 
-📍 [`tests/runtime.test.mjs:907-915`](https://github.com/sublimator/codex-plugin-cc/blob/35011c5e524cbdaaf1c9a5bd0a796c57ca14fba4/tests/runtime.test.mjs#L907-L915)
+📍 [`tests/runtime.test.mjs:907-915`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/tests/runtime.test.mjs#L907-L915)
 ```javascript
  907   const review = run("node", [SCRIPT, "review"], {
  908     cwd: repo,
@@ -177,7 +177,7 @@ Nothing stops that broker. Ever. The harness demonstrably knows how to clean up
 after itself — here it is conscientiously reaping a throwaway `sleep` process —
 it just never extends the courtesy to brokers:
 
-📍 [`tests/runtime.test.mjs:1560-1570`](https://github.com/sublimator/codex-plugin-cc/blob/35011c5e524cbdaaf1c9a5bd0a796c57ca14fba4/tests/runtime.test.mjs#L1560-L1570)
+📍 [`tests/runtime.test.mjs:1560-1570`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/tests/runtime.test.mjs#L1560-L1570)
 ```javascript
 1560   t.after(() => {
 1561     try {
@@ -235,7 +235,7 @@ that involve a real second session.
 The setup tests run the companion **in the actual repo root**, with only PATH
 and HOME-ish variables faked:
 
-📍 [`tests/runtime.test.mjs:36-45`](https://github.com/sublimator/codex-plugin-cc/blob/35011c5e524cbdaaf1c9a5bd0a796c57ca14fba4/tests/runtime.test.mjs#L36-L45)
+📍 [`tests/runtime.test.mjs:36-45`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/tests/runtime.test.mjs#L36-L45)
 ```javascript
   36   const result = run("node", [SCRIPT, "setup", "--json"], {
   37     cwd: ROOT,
@@ -252,15 +252,28 @@ and HOME-ish variables faked:
 That final assertion — `sessionRuntime.mode === "direct"` — reaches this code,
 whose fallback consults the **real** `broker.json` for the cwd it was handed:
 
-📍 [`plugins/codex/scripts/lib/codex.mjs:908`](https://github.com/sublimator/codex-plugin-cc/blob/35011c5e524cbdaaf1c9a5bd0a796c57ca14fba4/plugins/codex/scripts/lib/codex.mjs#L908)
+📍 [`plugins/codex/scripts/lib/codex.mjs:908`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/plugins/codex/scripts/lib/codex.mjs#L908)
 ```javascript
  908   const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
 ```
 
-If any real broker exists for the repo directory — say, because a developer ran
-`codex-companion task` from the repo root an hour ago, or because Bug 2 left one
-behind — five setup tests fail with `'shared' !== 'direct'`, and nothing in the
-failure output hints that the cause is a background process from last Tuesday.
+That explains one failing test. The other four setup tests are contaminated
+through a second door: setup's auth check *connects to the live broker* rather
+than the faked `codex` on PATH, so their auth/ready assertions are judged
+against the real runtime's state instead of the fixture's:
+
+📍 [`plugins/codex/scripts/lib/codex.mjs:945-948`](https://github.com/sublimator/codex-plugin-cc/blob/67d5a6bbb087983e03d687de1cbc968c87af0bd3/plugins/codex/scripts/lib/codex.mjs#L945-L948)
+```javascript
+ 945     client = await CodexAppServerClient.connect(cwd, {
+ 946       env: options.env,
+ 947       reuseExistingBroker: true
+ 948     });
+```
+
+So if any real broker exists for the repo directory — say, because a developer
+ran `codex-companion task` from the repo root an hour ago — five setup tests
+fail, and nothing in the failure output hints that the cause is a background
+process from earlier in the day.
 
 <details>
 <summary><b>Controlled repro — 90/90 → 85/5 → 90/90 without touching a line of code</b></summary>
@@ -271,10 +284,12 @@ failure output hints that the cause is a background process from last Tuesday.
    (auto-starts a broker; broker.json now exists for the repo cwd)
 3. same suite:          node --test tests/*.test.mjs   → # pass 85, # fail 5
 
-   all five failures identical:
+   the five failures are all setup tests; the mode assertion reads:
      AssertionError: 'shared' !== 'direct'
        expected: 'direct'   actual: 'shared'
-       at tests/runtime.test.mjs (setup tests)
+       at tests/runtime.test.mjs (setup test, sessionRuntime.mode)
+   the remaining four fail their auth/ready assertions — setup's auth
+   check reached the live broker instead of the faked codex binary.
 
 4. SessionEnd teardown of that broker (the plugin's own hook)
 5. same suite:          setup tests → 8/8; full suite → 90/90
@@ -292,17 +307,22 @@ isolated state/broker directory the way they already inject PATH.
 
 ## How the three compound
 
-Bug 2 breeds orphan brokers on every developer machine that runs the tests.
-Bug 3 turns any of those orphans (or any legitimate broker) into five phantom
-test failures. And while you're debugging *that*, Bug 1 is killing your
-long-running Codex jobs whenever an unrelated Claude session exits, leaving
-zombie job records that report `"running"` from beyond the grave. Each bug
-manufactures evidence that misdirects the investigation of the others — which
-is exactly how they survived to v1.0.5.
+Bug 2 breeds orphan brokers on every developer machine that runs the tests —
+in temp workspaces, so they don't trip Bug 3 directly, but they bury the *one*
+broker that matters in a haystack of dozens and make any process-level
+diagnosis miserable. Bug 3 turns any legitimate repo-root broker — the natural
+consequence of a developer using the companion in their own checkout — into
+five phantom test failures. And while you're debugging *that*, Bug 1 is
+killing your long-running Codex jobs whenever an unrelated Claude session
+exits, leaving zombie job records that report `"running"` from beyond the
+grave. Each bug manufactures evidence that misdirects the investigation of
+the others — which is how all three survived to v1.0.5.
 
 ---
 
 *Generated with [projected-source](https://github.com/sublimator/projected-source):
 every snippet above is extracted from the marked source in this fork at render
 time, with GitHub permalinks — the `//@@start`/`//@@end` markers in the source
-are the anchors. Rendered from `dossier/broker-lifecycle.md.j2`.*
+are the anchors. Permalinks deliberately pin the markers commit (the dossier
+commit lands after it, so the two shas differ by design). Rendered from
+`dossier/broker-lifecycle.md.j2`.*
